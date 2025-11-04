@@ -249,8 +249,8 @@ function solveWrapper(durations, desiredDuration) {
   const adjBonuses = durations.map(duration =>
     durations.map(duration2 =>
       FRAMING_TRANSITION_REWARD[
-        lettersToFraming[duration.framing ?? "UNK"]][
-        lettersToFraming[duration2.framing ?? "UNK"]]
+        lettersToFraming[duration.alternative.framing ?? "UNK"]][
+        lettersToFraming[duration2.alternative.framing ?? "UNK"]]
     )
   );
 
