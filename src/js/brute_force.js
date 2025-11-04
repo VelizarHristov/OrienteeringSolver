@@ -108,6 +108,33 @@ function solveBruteForce(intervals, adjBonuses, target) {
     };
 }
 
+function findFeasible(intervals, target, slack = 0) {
+  if (slack > target)
+    return [];
+  if (intervals.length === 0)
+    return null;
+  
+  const [{ from, to }, ...nextIntervals] = intervals;
+  const newTarget = target - from;
+  const newSlack = slack + (to - from);
+  
+  let solutions;
+  if (newTarget < 0) {
+    solutions = findFeasible(nextIntervals, target, slack);
+  } else {
+    const withCurrent = findFeasible(nextIntervals, newTarget, newSlack);
+    if (withCurrent !== null)
+      solutions = [-1, ...withCurrent].map(x => x + 1);
+    else
+      solutions = findFeasible(nextIntervals, target, slack);
+  }
+  
+  if (solutions === null)
+    return null;
+  else
+    return solutions.map(x => x + 1);
+}
+
 function solve(intervals, adjBonuses, target) {
   const sz = calcProblemSize(intervals, target);
   if (sz == -1) {
@@ -115,8 +142,9 @@ function solve(intervals, adjBonuses, target) {
   } else if (sz < MAX_BRUTEFORCE_SIZE) {
     return solveBruteForce(intervals, adjBonuses, target);
   } else {
-    // TODO: solve with a faster method
-    return "Error: problem too large - TODO: solve with a faster method";
+    const res = findFeasible(intervals, target);
+    // TODO: transform the output to return intervals with a selected length for each
+    return res;
   }
 }
 
@@ -131,6 +159,7 @@ const FRAMING_CATEGORIES = {
   UNKNOWN: 'UNK',
   EXTREME_LONG_SHOT: 'ELS'
 };
+const lettersToFraming = Object.fromEntries(Object.entries(FRAMING_CATEGORIES).map(([k, v]) => [v, k]));
 
 const FRAMING_TRANSITION_REWARD = {
   EXTREME_CLOSE_UP: {
@@ -245,7 +274,6 @@ function solveWrapper(durations, desiredDuration) {
     };
   });
 
-  const lettersToFraming = Object.fromEntries(Object.entries(FRAMING_CATEGORIES).map(([k, v]) => [v, k]));
   const adjBonuses = durations.map(duration =>
     durations.map(duration2 =>
       FRAMING_TRANSITION_REWARD[
@@ -254,7 +282,7 @@ function solveWrapper(durations, desiredDuration) {
     )
   );
 
-  solve(intervals, adjBonuses, desiredDuration);
+  return solve(intervals, adjBonuses, desiredDuration);
 }
 
 function debugSolve(intervals, adjBonuses, target, scalaProblemSize, scalaScore, scalaSolution, scalaMs) {

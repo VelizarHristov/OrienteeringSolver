@@ -113,9 +113,8 @@ def findFeasible(intervals: List[Interval], target: Int, slack: Int = 0): Option
                 val newTarget = target - from
                 val newSlack = slack + (to - from)
                 lazy val nextSolutions = findFeasible(nextIntervals, target, slack)
-                findFeasible(nextIntervals, newTarget, newSlack)
                 val solutions = if newTarget < 0 then
-                    findFeasible(intervals.tail, target, slack)
+                    nextSolutions
                 else
                     findFeasible(nextIntervals, newTarget, newSlack).map(-1 :: _).orElse(nextSolutions)
                 solutions.map(_.map(_ + 1))
