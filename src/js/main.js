@@ -12,6 +12,21 @@ const LAST_ADJ_MULT = 1.2;
 // takes approximately 1ms per 1000
 const MAX_BRUTEFORCE_SIZE = 500_000;
 
+// used in local search - more is exponentially slower, but gives a better score
+const K = 3;
+
+function* permutations(arr) {
+  if (arr.length <= 1) {
+    yield arr;
+  } else {
+    for (let i = 0; i < arr.length; i++) {
+      const rest = [...arr.slice(0, i), ...arr.slice(i + 1)];
+      for (const perm of permutations(rest))
+        yield [arr[i], ...perm];
+    }
+  }
+}
+
 // k = the size of the longest possible set of intervals that fits
 // output is n!/k! * 2^k
 function calcProblemSize(intervals, target) {
@@ -36,7 +51,7 @@ function calcProblemSize(intervals, target) {
   return problemSize;
 }
 
-function solveBruteForce(intervals, adjBonuses, target) {
+function getAdjBonusForLast(intervals, adjBonuses) {
   let adjBonusForLast = 0;
   if (intervals.length !== 1) {
     for (let i = 0; i < intervals.length; i++)
@@ -45,6 +60,11 @@ function solveBruteForce(intervals, adjBonuses, target) {
           adjBonusForLast += adjBonuses[i][j];
     adjBonusForLast = (adjBonusForLast / (intervals.length * (intervals.length - 1))) * LAST_ADJ_MULT;
   }
+  return adjBonusForLast;
+}
+
+function solveBruteForce(intervals, adjBonuses, target) {
+  const adjBonusForLast = getAdjBonusForLast(intervals, adjBonuses);
 
   let allStates = [[]];
   let bestScore = -Number.MAX_VALUE;
@@ -100,7 +120,7 @@ function solveBruteForce(intervals, adjBonuses, target) {
   }
 
   if (bestScore === -Number.MAX_VALUE)
-    return "Error: unsolvable";
+    return null;
   else
     return {
       score: bestScore,
@@ -108,31 +128,181 @@ function solveBruteForce(intervals, adjBonuses, target) {
     };
 }
 
+// Finds any feasible solution, ignoring any score, prefers returning intervals in sorted order.
+// Theoretically O(2^n), - can be very slow if the intervals are very narrow (subset sum problem);
+//   with our wide intervals it should be very fast.
 function findFeasible(intervals, target, slack = 0) {
   if (slack > target)
     return [];
   if (intervals.length === 0)
     return null;
   
-  const [{ from, to }, ...nextIntervals] = intervals;
+  const [{ from, choiceLen }, ...nextIntervals] = intervals;
   const newTarget = target - from;
-  const newSlack = slack + (to - from);
+  const newSlack = slack + choiceLen;
   
-  let solutions;
+  let solution;
   if (newTarget < 0) {
-    solutions = findFeasible(nextIntervals, target, slack);
+    solution = findFeasible(nextIntervals, target, slack);
   } else {
     const withCurrent = findFeasible(nextIntervals, newTarget, newSlack);
     if (withCurrent !== null)
-      solutions = [-1, ...withCurrent].map(x => x + 1);
+      solution = [-1, ...withCurrent];
     else
-      solutions = findFeasible(nextIntervals, target, slack);
+      solution = findFeasible(nextIntervals, target, slack);
   }
   
-  if (solutions === null)
+  if (solution === null)
     return null;
   else
-    return solutions.map(x => x + 1);
+    return solution.map(x => x + 1);
+}
+
+function solveLocalSearch(intervals, adjBonuses, target) {
+  const adjBonusForLast = getAdjBonusForLast(intervals, adjBonuses);
+  const intervalsByWidth = intervals.map((item, idx) => [item, idx])
+    .sort((a, b) => b[0].choiceLen - a[0].choiceLen);
+  const intervalIdxMapping = intervalsByWidth.map(item => item[1]);
+  const initialSolutionShuffled = findFeasible(intervalsByWidth.map(item => item[0]), target);
+  if (initialSolutionShuffled === null)
+    return null;
+  let curSolution = initialSolutionShuffled.map(idx => intervalIdxMapping[idx]);
+
+  function efficiencies(solution) {
+    return solution.map((_, i) => {
+      const adjBonus = i === (solution.length - 1) ? adjBonusForLast : adjBonuses[solution[i]][solution[i + 1]];
+      return intervals[solution[i]].score + adjBonus;
+    });
+  }
+
+  function getBestLengths(solution, thisTarget = target) {
+    const bestEffs = efficiencies(solution).map((item, idx) => [item, idx]).sort((a, b) => b[0] - a[0]);
+    let spareLength = thisTarget - solution.map(i => intervals[i].from).reduce((a, b) => a + b);
+    let i = 0;
+    // taken at greater than `from`
+    const extendedIntervals = [];
+    while (spareLength > 0 && i < bestEffs.length) {
+      const idx = solution[bestEffs[i][1]];
+      spareLength -= intervals[idx].choiceLen;
+      extendedIntervals.push(idx);
+      i += 1;
+    }
+    const maxes = new Set(extendedIntervals.slice(0, -1));
+
+    if (spareLength > 0) {
+      // unsolvable
+      return solution.map(_ => 0);
+    } else {
+      return solution.map(i => {
+        if (maxes.has(i))
+          return intervals[i].to;
+        else if (extendedIntervals.at(-1) === i)
+          return intervals[i].to + spareLength; // spareLength is a negative number
+        else
+          return intervals[i].from;
+      });
+    }
+  }
+
+  // TODO: also port getBestLengths2 (which is slower but better)
+  //   and add a top-level constant that switches between them
+
+  function solutionScore(solution, lengths) {
+    const effs = efficiencies(solution);
+    let sum = 0;
+    for (let i = 0; i < solution.length; i++) {
+      const maxBonus = lengths[i] === intervals[solution[i]].to ? (1 + MAX_INTERVAL_BONUS) : 1;
+      sum += effs[i] * maxBonus * lengths[i];
+    }
+    return sum;
+  }
+
+  const simpleScoreMemo = {};
+  function simpleScore(solution) {
+    if (simpleScoreMemo[solution] !== undefined) {
+      return simpleScoreMemo[solution];
+    } else {
+      let res = 0;
+      const minIntervalLen = solution.map(i => intervals[i].from).reduce((a, b) => a + b);
+      if (minIntervalLen <= target) {
+        const lengths = getBestLengths(solution);
+        res = solutionScore(solution, lengths);
+      }
+      simpleScoreMemo[solution] = res;
+      return res;
+    }
+  }
+
+  const kOpt = (k) => (solution) => {
+    const initialScore = simpleScore(solution);
+
+    function* partitions(k, skipped = 0) {
+      if (k === 0)
+        yield [solution.slice(skipped)];
+      else
+        for (let i = 1; i <= solution.length - skipped - k + 1; i++)
+          for (const rest of partitions(k - 1, skipped + i))
+            yield [solution.slice(skipped, skipped + i), ...rest];
+    }
+
+    for (const intervals of partitions(k))
+      for (const permutation of permutations(intervals))
+        if (simpleScore(permutation.flat()) > initialScore)
+          return permutation.flat();
+
+
+    return null;
+  };
+
+  const tryReplacing = (solution) => {
+    const initialScore = simpleScore(solution);
+
+    const remaining = [...intervals.keys()].filter(i => !solution.includes(i));
+    for (let toAdd of remaining) {
+      for (let toRemove = 0; toRemove < solution.length; toRemove++) {
+        const newSolution = [...solution];
+        newSolution[toRemove] = toAdd;
+        if (simpleScore(newSolution) > initialScore)
+          return newSolution;
+      }
+    }
+
+    return null;
+  }
+
+  const tryAdding = (solution) => {
+    const initialScore = simpleScore(solution);
+
+    const remaining = [...intervals.keys()].filter(i => !solution.includes(i));
+    for (let toAdd of remaining) {
+      for (let toSkip = 0; toSkip <= solution.length; toSkip++) {
+        const newSolution = solution.slice(0, toSkip).concat([toAdd]).concat(solution.slice(toSkip));
+        if (simpleScore(newSolution) > initialScore)
+          return newSolution;
+      }
+    }
+
+    return null;
+  }
+
+  const funcs = [kOpt(K), tryReplacing, tryAdding];
+  let halt = false;
+  while(!halt) {
+    halt = true;
+    for (let func of funcs) {
+      const res = func(curSolution);
+      if (res !== null) {
+        curSolution = res;
+        halt = false;
+        break;
+      }
+    }
+  }
+
+  return {
+    score: simpleScore(curSolution) / 120,
+    state: curSolution
+  };
 }
 
 function solve(intervals, adjBonuses, target) {
@@ -140,9 +310,13 @@ function solve(intervals, adjBonuses, target) {
   if (sz == -1) {
     return "Error: unsolvable (trivially)";
   } else if (sz < MAX_BRUTEFORCE_SIZE) {
-    return solveBruteForce(intervals, adjBonuses, target);
+    const res = solveBruteForce(intervals, adjBonuses, target);
+    if (res === null)
+      return "Error: unsolvable";
   } else {
     const res = findFeasible(intervals, target);
+    if (res === null)
+      return "Error: unsolvable";
     // TODO: transform the output to return intervals with a selected length for each
     return res;
   }
@@ -285,13 +459,12 @@ function solveWrapper(durations, desiredDuration) {
   return solve(intervals, adjBonuses, desiredDuration);
 }
 
-function debugSolve(intervals, adjBonuses, target, scalaProblemSize, scalaScore, scalaSolution, scalaMs) {
-  const sz = calcProblemSize(intervals, target);
-  console.log(`problemSize Scala: ${scalaProblemSize} | JS: ${sz}`);
+function debugSolve(intervals, adjBonuses, target, scalaScore, scalaSolution, scalaMs) {
   const startTime = performance.now();
   let solveRes = {state: "N/A", score: "N/A"};
-  if (sz < 30_000_000)
-    solveRes = solveBruteForce(intervals, adjBonuses, target);
+  solveRes = solveLocalSearch(intervals, adjBonuses, target);
+  // if (sz < 30_000_000)
+  //   solveRes = solveBruteForce(intervals, adjBonuses, target);
   const timeTaken = performance.now() - startTime;
   console.log(`solution Scala: ${scalaSolution} | JS: ${JSON.stringify(solveRes.state)}`);
   console.log(`solution score Scala: ${scalaScore} | JS: ${solveRes.score}`);

@@ -112,12 +112,12 @@ def findFeasible(intervals: List[Interval], target: Int, slack: Int = 0): Option
             case Interval(from, to, _) :: nextIntervals =>
                 val newTarget = target - from
                 val newSlack = slack + (to - from)
-                lazy val nextSolutions = findFeasible(nextIntervals, target, slack)
-                val solutions = if newTarget < 0 then
-                    nextSolutions
+                lazy val nextSolution = findFeasible(nextIntervals, target, slack)
+                val solution = if newTarget < 0 then
+                    nextSolution
                 else
-                    findFeasible(nextIntervals, newTarget, newSlack).map(-1 :: _).orElse(nextSolutions)
-                solutions.map(_.map(_ + 1))
+                    findFeasible(nextIntervals, newTarget, newSlack).map(-1 :: _).orElse(nextSolution)
+                solution.map(_.map(_ + 1))
             case Nil => None
 
 // TODO ideas to improve:
@@ -133,23 +133,24 @@ def solveLocalSearch(intervals: Array[Interval], adjBonuses: Array[Array[Double]
     val intervalsByWidth = intervals.zipWithIndex.sortBy(-_._1.choiceLen)
     val intervalIdxMapping = intervalsByWidth.map(_._2)
     val initialSolutionShuffled = findFeasible(intervalsByWidth.map(_._1).toList, target).get
-    val initialSolutionIndices = initialSolutionShuffled.map(intervalIdxMapping.apply)
+    var curSolution = initialSolutionShuffled.map(intervalIdxMapping.apply)
 
     def efficiencies(solution: Seq[Int]) = solution.indices.map: i =>
         val adjBonus = if i == (solution.length - 1) then adjBonusForLast else adjBonuses(solution(i))(solution(i + 1))
         intervals(solution(i)).relevance + adjBonus
 
     def getBestLengths(solution: Seq[Int], thisTarget: Int = target) =
-        val effs = efficiencies(solution).zipWithIndex.sortBy(-_._1)
+        val bestEffs = efficiencies(solution).zipWithIndex.sortBy(-_._1)
         var spareLength = thisTarget - solution.map(i => intervals(i).from).sum
         var i = 0
-        val bestLengths = mutable.ArrayBuffer[Int]()
-        while (spareLength > 0 && i < effs.length)
-            val idx = solution(effs(i)._2)
+        // taken at greater than `from`
+        val extendedIntervals = mutable.ArrayBuffer[Int]()
+        while (spareLength > 0 && i < bestEffs.length)
+            val idx = solution(bestEffs(i)._2)
             spareLength -= intervals(idx).choiceLen
-            bestLengths += idx
+            extendedIntervals += idx
             i += 1
-        val maxes = bestLengths.dropRight(1).toSet
+        val maxes = extendedIntervals.dropRight(1).toSet
 
         if spareLength > 0 then
             List.fill(solution.length)(0)
@@ -157,8 +158,8 @@ def solveLocalSearch(intervals: Array[Interval], adjBonuses: Array[Array[Double]
             solution.map: i =>
                 if maxes.contains(i) then
                     intervals(i).to
-                else if bestLengths.lastOption.contains(i) then
-                    intervals(i).to + spareLength
+                else if extendedIntervals.lastOption.contains(i) then
+                    intervals(i).to + spareLength // spareLength is a negative number
                 else
                     intervals(i).from
 
@@ -180,14 +181,14 @@ def solveLocalSearch(intervals: Array[Interval], adjBonuses: Array[Array[Double]
             simpleScoreMemo(solution) = res
             res
 
-    // TODO: probably get rid of this and use getBestLengths only
+    // TODO: rename (note - this is a slower version that sometimes finds a better score)
     def getBestLengths2(solution: Seq[Int]) =
-        val effs = efficiencies(solution).zipWithIndex.sortBy(-_._1)
+        val bestEffs = efficiencies(solution).zipWithIndex.sortBy(-_._1)
         var spareLength = target - solution.map(i => intervals(i).from).sum
         var i = 0
         val bestLengths = mutable.ArrayBuffer[Int]()
-        while (spareLength > 0 && i < effs.length)
-            val idx = solution(effs(i)._2)
+        while (spareLength > 0 && i < bestEffs.length)
+            val idx = solution(bestEffs(i)._2)
             spareLength -= intervals(idx).choiceLen
             bestLengths += idx
             i += 1
@@ -325,32 +326,35 @@ def solveLocalSearch(intervals: Array[Interval], adjBonuses: Array[Array[Double]
         yield permutation.flatten
         allPossibilities.nextOption
 
-    // println(s"${simpleScore(initialSolutionIndices) / FPS} <- initial solution")
-
-    var curSolution = initialSolutionIndices
+    // val funcs = Seq(
+    //     tryRemoving -> "tryRemoving",
+    //     kOpt(2) -> s"kOpt(${2})",
+    //     kReplace(1) -> s"kReplace(1)",
+    //     tryAdding -> "tryAdding",
+    //     tryReversing -> "tryReversing",
+    //     kOpt(kToUse) -> s"kOpt(${kToUse})",
+    //     kSwap(kToUse) -> s"kSwap(${kToUse})",
+    //     kReplace(kToUse - 2) -> s"kReplace(${kToUse - 2})",
+    // ).view
+    val funcs = Seq(
+        kOpt(3) -> "kOpt(3)",
+        kReplace(1) -> "kReplace(1)",
+        tryAdding -> "tryAdding"
+    ).view
     var halt = false
     while (!halt)
-        val funcs = Seq(
-            tryRemoving -> "tryRemoving",
-            kOpt(2) -> s"kOpt(${2})",
-            kReplace(1) -> s"kReplace(1)",
-            tryAdding -> "tryAdding",
-            tryReversing -> "tryReversing",
-            kOpt(kToUse) -> s"kOpt(${kToUse})",
-            kSwap(kToUse) -> s"kSwap(${kToUse})",
-            kReplace(kToUse - 2) -> s"kReplace(${kToUse - 2})",
-        ).view
         funcs.flatMap((f, name) => {
             f(curSolution).map(sol => (sol, name))
         }).headOption match
             case Some((newSolution, fName)) =>
-                val prevLen = getBestLengths(curSolution).sum
-                val newLen = getBestLengths(newSolution).sum
-                if (prevLen != newLen) {
-                    println((prevLen, newLen, fName))
-                    System.exit(0)
-                }
+                // val prevLen = getBestLengths(curSolution).sum
+                // val newLen = getBestLengths(newSolution).sum
+                // if (prevLen != newLen) {
+                //     println((prevLen, newLen, fName))
+                //     System.exit(0)
+                // }
                 curSolution = newSolution
+                // println(newSolution)
                 // println(s"${simpleScore(curSolution) / FPS} <- $fName")
             case None =>
                 halt = true
@@ -446,9 +450,8 @@ def solveWith(n: Int, targetFraction: Double, maxWidth: Double) =
 @main def run(): Unit =
     for
         maxWidth <- Seq(1.0, 0.8, 0.6, 0.3, 0.1)
-        // n <- Seq(1, 2, 3, 4, 5, 6, 7, 8, 9)
-        n <- Seq(1, 2, 3)
-        // n <- Seq(10, 11, 12)
+        // n <- Seq(1, 2, 3, 4, 5, 6, 7, 8, 9, 10, 11, 12)
+        n <- Seq(18)
         targetFraction <- Seq(0.1, 0.2, 0.4, 0.6, 0.8, 0.9)
     do
         val intervals = generateIntervals(n, maxWidth)
@@ -461,21 +464,12 @@ def solveWith(n: Int, targetFraction: Double, maxWidth: Double) =
                     (random.nextDouble * 2 - 1) * MAX_ADJ_BONUS
             ).toArray
         ).toArray
-        val problemSize = calcProblemSize(intervals, target)
-        var score = 0.0
-        var solution = List[Int]()
         val t = System.nanoTime()
-        if problemSize < 30_000_000 then
-            solveBruteForce(intervals, adjBonuses, target) match
-                case Some(((_, nodes), scoreRes, lengths)) =>
-                    // println("lengths = " + lengths.reverse)
-                    score = scoreRes
-                    solution = nodes.reverse
-                case None => score = -1
+        val (solution, score) = solveLocalSearch(intervals, adjBonuses, target)
         val msTaken = (System.nanoTime() - t) / 1_000_000.0
         val intervalsAsJS = "[" + intervals.map(i => s"{from: ${i.from}, to: ${i.to}, score: ${i.relevance}, choiceLen: ${i.choiceLen}}").mkString(",") + "]"
         val adjBonusesAsJS = "[" + adjBonuses.map(arr => "[" + arr.mkString(",") + "]").mkString(",") + "]"
-        println(s"debugSolve($intervalsAsJS, $adjBonusesAsJS, $target, $problemSize, $score, \"${solution.mkString(",")}\", $msTaken)")
+        println(s"debugSolve($intervalsAsJS, $adjBonusesAsJS, $target, $score, \"${solution.mkString(",")}\", $msTaken)")
     System.exit(0)
 
     for
