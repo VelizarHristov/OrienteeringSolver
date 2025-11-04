@@ -299,9 +299,15 @@ function solveLocalSearch(intervals, adjBonuses, target) {
     }
   }
 
+  const lengths = getBestLengths(curSolution);
+  const finalSolution = curSolution.map((item, i) => ({
+    idx: item,
+    length: lengths[i]
+  }));
+
   return {
-    score: simpleScore(curSolution) / 120,
-    state: curSolution
+    score: simpleScore(curSolution),
+    state: finalSolution
   };
 }
 
@@ -461,8 +467,7 @@ function solveWrapper(durations, desiredDuration) {
 
 function debugSolve(intervals, adjBonuses, target, scalaScore, scalaSolution, scalaMs) {
   const startTime = performance.now();
-  let solveRes = {state: "N/A", score: "N/A"};
-  solveRes = solveLocalSearch(intervals, adjBonuses, target);
+  const solveRes = solveLocalSearch(intervals, adjBonuses, target);
   // if (sz < 30_000_000)
   //   solveRes = solveBruteForce(intervals, adjBonuses, target);
   const timeTaken = performance.now() - startTime;
