@@ -3,6 +3,7 @@ package main
 import collection.immutable.Queue
 import collection.mutable
 
+// TODO: should not crash with small problem sizes (should give the same output as brute force)
 object BranchAndBound:
     opaque type BitSet = Long
 
@@ -196,19 +197,14 @@ object BranchAndBound:
                     usedEdges = usedEdges.safeAdd(bonus._1)
             var skipped = 0
             var usedBestBonusLen = false
-            // println("h1")
-            // println(estScore)
             while (remaining != 0 && skipped < bestForPair.length)
                 val (i, j, efficiency) = bestForPair(skipped)
-                // println("test: " + (visited.contains(37), visited))
                 if efficiency < state.bestBonus && !usedBestBonusLen then
                     val lenToUse = state.bestBonusLen min remaining
                     estScore += lenToUse * state.bestBonus
                     remaining -= lenToUse
                     usedBestBonusLen = true
-                    // println(("best", estScore))
                 else
-                    // println("observing " + (i, j, efficiency, visited.contains(i), state.visited.contains(j)))
                     if !visited.contains(i) && !state.visited.contains(j) then
                         val len = if requiredToPick.contains(i) then intervals(i).choiceLen else intervals(i).to
                         val lenToUse = len min remaining
@@ -216,7 +212,6 @@ object BranchAndBound:
                         remaining -= lenToUse
                         visited = visited.add(i)
                         usedEdges = usedEdges.safeAdd(j)
-                        // println((i, j, efficiency, lenToUse, estScore))
                     skipped += 1
             (estScore, visited - state.visited, usedEdges)
 
@@ -258,13 +253,13 @@ object BranchAndBound:
         val HEURISTIC_DEPTH = 7
         def heuristic2(state: State) =
             def includeOrExclude(state: State, included: List[Int], depth: Int): Double =
-                val (heuristicScore, usedIdx, usedEdges) = heuristicCalc(state, included)
-                intervals.indices.find(i => usedEdges.contains(i) && !usedIdx.contains(i) && !included.contains(i) && intervals(i).from <= state.remaining) match
+                val (heuristicScore, usedIndices, usedEdges) = heuristicCalcOld(state, included)
+                intervals.indices.find(i => usedEdges.contains(i) && !usedIndices.contains(i) && !included.contains(i) && intervals(i).from <= state.remaining) match
                     case Some(idx) =>
                         val excludedState = state.copy(visited = state.visited.add(idx))
                         if depth == 0 then
-                            val excludedScore = heuristicCalc(excludedState, included)._1
-                            val includedScore = heuristicCalc(state, idx :: included)._1
+                            val excludedScore = heuristicCalcOld(excludedState, included)._1
+                            val includedScore = heuristicCalcOld(state, idx :: included)._1
                             excludedScore max includedScore
                         else
                             val excludedScore = includeOrExclude(excludedState, included, depth - 1)
@@ -273,221 +268,35 @@ object BranchAndBound:
                     case None => heuristicScore
             includeOrExclude(state, List(), HEURISTIC_DEPTH)
 
+        val bestEffPrecalc = adjBonuses.zipWithIndex.map: (arr, i) =>
+            val bonusesForI = arr.indices.map(j => (j, arr(j))) :+ (-1, adjBonusForLast)
+            bonusesForI.map((j, bonus) =>
+                (j, (intervals(i).relevance + bonus) * (1 + MAX_INTERVAL_BONUS))
+            ).sortBy(-_._2).toArray
         def heuristic2Faster(state: State) =
-            // TODO: (style) rename the next two variables
-            val bestForPair2 =
-                val builder = mutable.ArrayBuilder.make[(Int, Int, Double)]
-                var idx = 0
-                var prevEff = Double.MaxValue
-                bestForPair.indices.foreach: idx =>
-                    val x@(i, j, eff) = bestForPair(idx)
-                    if !state.visited.contains(i) && !state.visited.contains(j) then
-                        if prevEff > state.bestBonus && state.bestBonus > eff then
-                            builder += ((-1, -1, state.bestBonus))
-                        builder += x
-                        prevEff = eff
-                builder.result()
-            val bestBonuses2 = bestBonuses.zipWithIndex.map((arr, i) => arr
-                .view
-                .filter((j, _) => !state.visited.contains(j))
-                .map((j, bonus) => (j, (intervals(i).relevance + bonus) * (1 + MAX_INTERVAL_BONUS)))
-                .toArray
-            )
-
-            case class HeuristicState(
-                addedNodes: Map[Int, Queue[(Int, Double)]],
-                permaIncluded: Vector[(Double, Int, Array[(Int, Double)])],
-                edgesInNodes: Map[Int, Set[Int]],
-                edgesInPermaIncluded: Map[Int, Set[Int]],
-                included: List[(Int, Int, Double)],
-                reducedLengths: Map[Int, Int],
-                excluded: BitSet,
-                remaining: Int,
-                estScore: Double,
-                skipped: Int
-            ):
-                lazy val finalEstScore =
-                    if skipped < bestForPair2.length && remaining > 0 then
-                        val (i, j, efficiency) = bestForPair2(skipped)
-                        val len = reducedLengths.get(i).getOrElse(intervals(i).to)
-                        if addedNodes.contains(i) || excluded.contains(j) || remaining > len then
-                            throw new IllegalStateException("This should never happen - we have a bug")
-                        else
-                            estScore + efficiency * remaining
-                    else
-                        estScore
-
-            var permaIncluded = Vector[(Double, Int, Array[(Int, Double)])]()
-            var edgesInPermaIncluded = Map[Int, Set[Int]]()
-            var estScore = state.score
-            state.lastOpt.foreach: last =>
-                val arr = bestBonuses2(last)
-                arr.headOption.foreach: (toNodeIdx, eff) =>
-                    // adjust because bestBonuses2 always gives a MAX_INTERVAL_BONUS and the includes relevance
-                    estScore -= state.lastEffLen * (intervals(last).relevance + adjBonusForLast)
-                    val updatedEffLen = state.lastEffLen / (1 + MAX_INTERVAL_BONUS)
-                    estScore += updatedEffLen * eff
-                    permaIncluded = (updatedEffLen, 0, arr) +: permaIncluded
-                    edgesInPermaIncluded = edgesInPermaIncluded.updated(toNodeIdx, Set(0))
-            val initialHState = HeuristicState(Map(), permaIncluded, Map(), edgesInPermaIncluded, List(),
-                Map(-1 -> state.bestBonusLen), BitSet(), state.remaining, estScore, 0)
-
-            def fillCapacity(hState: HeuristicState) =
-                var addedNodes = hState.addedNodes
-                var edgesInNodes = hState.edgesInNodes
-                var included = hState.included
-                var estScore = hState.estScore
-                var remaining = hState.remaining
-                var skipped = hState.skipped
-                var stop = false
-                while (!stop && remaining > 0 && skipped < bestForPair2.length)
-                    val (i, j, efficiency) = bestForPair2(skipped)
-                    if !addedNodes.contains(i) && !hState.excluded.contains(j) then
-                        val len = hState.reducedLengths.get(i).getOrElse(intervals(i).to)
-                        if remaining < len then
-                            stop = true
-                        else
-                            estScore += len * efficiency
-                            remaining -= len
-                            if i != -1 then
-                                included = (i, j, efficiency) :: included
-                                if i != j then // not real edges (more like edge CASES, duh!)
-                                    addedNodes = addedNodes.updated(i, Queue())
-                                    edgesInNodes = edgesInNodes.updatedWith(j)(s =>
-                                        Some(s.getOrElse(Set()) + i)
-                                    )
-                    else
-                        addedNodes = addedNodes.updatedWith(i)(
-                            _.map(_.enqueue((j, efficiency)))
-                        )
-                    if !stop then
-                        skipped += 1
-                HeuristicState(addedNodes, hState.permaIncluded, edgesInNodes,
-                    hState.edgesInPermaIncluded, included, hState.reducedLengths, hState.excluded,
-                    remaining, estScore, skipped)
-            val startHState = fillCapacity(initialHState)
-            val h1 = startHState.finalEstScore
-            val h2 = heuristicCalc(state)._1
-            if ((h1 - h2).abs > 0.00001) {
-                println("\n\n\n\n\nEND!!!\n\n\n\n\n")
-                debug = true
-                heuristicCalc(state)
-                println((h1, h2, startHState))
-                println(bestForPair2.toList)
-                System.exit(0)
-            }
-
-            def includeOrExcludeFaster(hState: HeuristicState, depth: Int): Double =
-                // TODO: instead of picking an arbitrary edge, pick the one which would worsen estScore the most
-                val nextEdge = hState.edgesInNodes.keys.headOption.orElse(hState.edgesInPermaIncluded.keys.headOption)
-                nextEdge match
-                    case Some(idx) =>
-                        val includedState =
-                            var idxInArr = 0
-                            val arr = bestBonuses2(idx)
-                            while (hState.excluded.contains(arr(idxInArr)._1))
-                                idxInArr += 1
-                            var addedNodes = hState.addedNodes
-                            val permaIncluded = hState.permaIncluded :+ (intervals(idx).from.toDouble, idxInArr, arr)
-                            val edgesInNodes = hState.edgesInNodes.removed(idx)
-                            val edgesInPermaIncluded = hState.edgesInPermaIncluded.removed(idx)
-                            var included = hState.included
-                            val reducedLengths = hState.reducedLengths.updated(idx, intervals(idx).choiceLen)
-                            var remaining = hState.remaining - intervals(idx).from
-                            var estScore = hState.estScore + intervals(idx).from * arr(idxInArr)._2
-                            var skipped = hState.skipped
-                            while (remaining < 0)
-                                val removed@(idxToRemove, edgeToRemove, eff) = included.head
-                                addedNodes = addedNodes.removed(idxToRemove)
-                                included = included.tail
-                                // TODO: rewinding this much is potentially slow, do we need to redesign the heuristic?
-                                while (bestForPair2(skipped) != removed)
-                                    skipped -= 1
-                                val len = reducedLengths.get(idxToRemove).getOrElse(intervals(idxToRemove).to)
-                                estScore -= eff * len
-                                remaining += len
-                            HeuristicState(addedNodes, permaIncluded, edgesInNodes, edgesInPermaIncluded,
-                                included, reducedLengths, hState.excluded, remaining, estScore, skipped)
-                        val excludedState =
-                            val excluded = hState.excluded.add(idx)
-                            var estScore = hState.estScore
-                            var edgesInPermaIncluded = hState.edgesInPermaIncluded
-                            hState.edgesInPermaIncluded.get(idx).foreach: indices =>
-                                indices.foreach: i =>
-                                    val (len, idxInArr, arr) = permaIncluded(i)
-                                    var newIdx = idxInArr + 1
-                                    while (excluded.contains(arr(newIdx)._1))
-                                        newIdx += 1
-                                    val (newNext, newEff) = arr(newIdx)
-                                    estScore -= len * (arr(idxInArr)._2 - newEff)
-                                    permaIncluded = permaIncluded.updated(i, (len, newIdx, arr))
-                                    edgesInPermaIncluded = edgesInPermaIncluded.updatedWith(newNext)(s => {
-                                        s match
-                                            case Some(set) => Some(set + i)
-                                            case None => Some(Set(i))
-                                    })
-                            edgesInPermaIncluded = edgesInPermaIncluded.removed(idx)
-                            var addedNodes = hState.addedNodes
-                            var included = hState.included
-                            var remaining = hState.remaining
-                            var skipped = hState.skipped
-                            var edgesInNodes = hState.edgesInNodes
-                            hState.edgesInNodes.get(idx).foreach: indices =>
-                                indices.foreach: i =>
-                                    var queue = addedNodes(i)
-                                    var stop = false
-                                    while (!stop)
-                                        queue.dequeueOption match
-                                            case Some(((edge, newEff), nextQueue)) =>
-                                                queue = nextQueue
-                                                if !excluded.contains(edge) then
-                                                    val len = hState.reducedLengths.get(i).getOrElse(intervals(i).to)
-                                                    // estScore -= len * (??? - newEff)
-                                                    intervals(i)
-                                                    stop = true
-                                                    // TODO: handle this case
-                                            case None =>
-                                                stop = true
-                                                // TODO: handle this case
-                                    addedNodes = addedNodes.updated(i, queue)
-                                    // TODO: also update edgesInNodes to add the new edge
-                            edgesInNodes = edgesInNodes.removed(idx)
-                            HeuristicState(addedNodes, permaIncluded, edgesInNodes, edgesInPermaIncluded,
-                                included, hState.reducedLengths, excluded, remaining, estScore, skipped)
-                        if depth == 0 then
-                            includedState.finalEstScore max excludedState.finalEstScore
-                        else
-                            val includedScore = includeOrExcludeFaster(includedState, depth - 1)
-                            val excludedScore = includeOrExcludeFaster(excludedState, depth - 1)
-                            includedScore max excludedScore
-                    case None =>
-                        hState.finalEstScore
-            includeOrExcludeFaster(startHState, HEURISTIC_DEPTH)
-
-        /*
-        def heuristic2Faster2(state: State) =
-            val bestBonuses2 = bestBonuses.zipWithIndex.map((arr, i) => arr
-                .view
-                .filter((j, _) => !state.visited.contains(j))
-                .map((j, bonus) => (j, (intervals(i).relevance + bonus) * (1 + MAX_INTERVAL_BONUS)))
-                .toArray
-            )
-            val nextIndices = Array.fill(intervals.length)(0)
-            val forQueue = intervals.indices.filterNot(state.visited.contains).map(i =>
-                val (j, eff) = bestBonuses2(i).head
+            // val bestEffPerNode0 = bestEffPrecalc.map: arr =>
+            //     arr.filter((j, _) => !state.visited.contains(j))
+            val bestEffPerNode = bestEffPrecalc.zipWithIndex.map: (arr, i) =>
+                val newArr = arr.filter((j, _) => !state.visited.contains(j))
+                if state.lastOpt.contains(i) then
+                    val lastEl = newArr.find(_._1 == -1).get
+                    newArr.filter(_._1 != -1) :+ lastEl
+                else
+                    newArr
+            val initialNextIndices = Array.fill(intervals.length)(1)
+            val notVisited = intervals.indices.filterNot(state.visited.contains)
+            val forQueue = notVisited.map: i =>
+                val (j, eff) = bestEffPerNode(i).head
                 (i, j, eff)
-            )
-            val next = mutable.PriorityQueue(forQueue *)(using (a, b) => a._3.compare(b._3))
-            // TODO: add the one-off bonus to `next`
+            val initialNext = mutable.PriorityQueue(forQueue *)(using (a, b) => a._3.compare(b._3))
+            initialNext.enqueue((-1, -1, state.bestBonus))
 
             case class HeuristicState(
                 nextIndices: Array[Int],
                 next: mutable.PriorityQueue[(Int, Int, Double)],
-                addedNodes: Map[Int, Queue[(Int, Double)]], // TODO: delete
-                permaIncluded: Vector[(Double, Int, Array[(Int, Double)])], // TODO: no need to have another reference to the array - the array is already in `bestBonuses2`, the idx in already in `nextIndices`
-                edgesInNodes: Map[Int, Set[Int]],
+                // TODO: (minor) use BitSet instead of Set[Int]
                 edgesInPermaIncluded: Map[Int, Set[Int]],
-                included: List[(Int, Int, Double)],
+                included: List[(Int, Int, Double)], // sorted starting from least efficient
                 reducedLengths: Map[Int, Int],
                 excluded: BitSet,
                 remaining: Int,
@@ -496,151 +305,170 @@ object BranchAndBound:
                 lazy val finalEstScore = next.headOption match
                     case Some((i, j, efficiency)) =>
                         val len = reducedLengths.get(i).getOrElse(intervals(i).to)
-                        if addedNodes.contains(i) || excluded.contains(j) || remaining > len then
-                            throw new IllegalStateException("This should never happen - we have a bug")
+                        if excluded.contains(j) || remaining > len then
+                            throw new IllegalStateException("This should never happen - we have a bug | " + excluded.contains(j))
                         else
                             estScore + efficiency * remaining
                     case None => estScore
 
-            var permaIncluded = Vector[(Double, Int, Array[(Int, Double)])]()
-            var edgesInPermaIncluded = Map[Int, Set[Int]]()
-            var estScore = state.score
+            var initEdgesInPermaIncluded = (-1 +: notVisited).map(_ -> Set[Int]()).toMap
+            var initEstScore = state.score
             state.lastOpt.foreach: last =>
-                val arr = bestBonuses2(last)
-                arr.headOption.foreach: (toNodeIdx, eff) =>
-                    // adjust because bestBonuses2 always gives a MAX_INTERVAL_BONUS and the includes relevance
-                    estScore -= state.lastEffLen * (intervals(last).relevance + adjBonusForLast)
+                bestEffPerNode(last).headOption.foreach: (toNodeIdx, eff) =>
+                    // adjust because bestEffPerNode always gives a MAX_INTERVAL_BONUS and the includes relevance
+                    initEstScore -= state.lastEffLen * (intervals(last).relevance + adjBonusForLast)
                     val updatedEffLen = state.lastEffLen / (1 + MAX_INTERVAL_BONUS)
-                    estScore += updatedEffLen * eff
-                    permaIncluded = (updatedEffLen, 0, arr) +: permaIncluded
-                    edgesInPermaIncluded = edgesInPermaIncluded.updated(toNodeIdx, Set(0))
-            val initialHState = HeuristicState(nextIndices, next, Map(), permaIncluded, Map(), edgesInPermaIncluded, List(),
-                Map(-1 -> state.bestBonusLen), BitSet(), state.remaining, estScore)
+                    initEstScore += updatedEffLen * eff
+                    initEdgesInPermaIncluded = initEdgesInPermaIncluded.updated(toNodeIdx, Set(last))
+            val initialHState = HeuristicState(initialNextIndices, initialNext,
+                initEdgesInPermaIncluded, List(), Map(-1 -> state.bestBonusLen), BitSet(),
+                state.remaining, initEstScore)
 
             def fillCapacity(hState: HeuristicState) =
-                var addedNodes = hState.addedNodes
-                var edgesInNodes = hState.edgesInNodes
+                val nextIndices = hState.nextIndices.clone()
+                val next = hState.next.clone()
                 var included = hState.included
                 var estScore = hState.estScore
                 var remaining = hState.remaining
                 var stop = false
-                while (!stop && remaining > 0 && hState.next.nonEmpty)
-                    val (i, j, efficiency) = hState.next.dequeue()
-                    if !addedNodes.contains(i) && !hState.excluded.contains(j) then
+                while (!stop && next.nonEmpty)
+                    val nextInQueue@(i, j, efficiency) = next.dequeue()
+                    if !hState.excluded.contains(i) && !hState.excluded.contains(j) then
                         val len = hState.reducedLengths.get(i).getOrElse(intervals(i).to)
                         if remaining < len then
                             stop = true
+                            next.enqueue(nextInQueue)
                         else
                             estScore += len * efficiency
                             remaining -= len
-                            if i != -1 then
-                                included = (i, j, efficiency) :: included
-                                if i != j then // not real edges (more like edge CASES, duh!)
-                                    edgesInNodes = edgesInNodes.updatedWith(j)(s =>
-                                        Some(s.getOrElse(Set()) + i)
-                                    )
-                    if !stop then
-                        skipped += 1
-                HeuristicState(addedNodes, hState.permaIncluded, edgesInNodes,
-                    hState.edgesInPermaIncluded, included, hState.reducedLengths, hState.excluded,
-                    remaining, estScore)
-            val startHState = fillCapacity(initialHState)
-            val h1 = startHState.finalEstScore
-            val h2 = heuristicCalc(state)._1
-            if ((h1 - h2).abs > 0.00001) {
-                println("\n\n\n\n\nEND!!!\n\n\n\n\n")
-                debug = true
-                heuristicCalc(state)
-                println((h1, h2, startHState))
-                System.exit(0)
-            }
+                            included = (i, j, efficiency) :: included
+                    else if !hState.excluded.contains(i) && i != -1 then
+                        val (nextJ, nextEff) = bestEffPerNode(i)(nextIndices(i))
+                        next.enqueue((i, nextJ, nextEff))
+                    // TODO (style): the next line is probably correct, but might be refactor-able
+                    if !stop && i != -1 && j != -1 && bestEffPerNode(i)(nextIndices(i))._1 == j then
+                        nextIndices(i) += 1
+                HeuristicState(nextIndices, next, hState.edgesInPermaIncluded,
+                    included, hState.reducedLengths, hState.excluded, remaining, estScore)
+            
+            inline def updateAndGetNext(excluded: BitSet, nextIndices: Array[Int], idx: Int) =
+                while (excluded.contains(bestEffPerNode(idx)(nextIndices(idx))._1))
+                    nextIndices(idx) += 1
+                bestEffPerNode(idx)(nextIndices(idx))
 
+            val startHState = fillCapacity(initialHState)
+            // val h1 = startHState.finalEstScore
+            // val h2 = heuristicCalcOld(state)._1
+            // if ((h1 - h2).abs > 0.00001) {
+            //     println("\n\n\n\n\nEND!!!\n\n\n\n\n")
+            //     println("state = " + state)
+            //     println("start score = " + state.score)
+            //     println("target = " + target)
+            //     println("remaining = " + state.remaining)
+            //     println(bestEffPerNode(state.lastOpt.get).headOption)
+            //     debug = true
+            //     heuristicCalcOld(state)
+            //     println((h1, h2, startHState))
+            //     intervals.foreach(println)
+            //     System.exit(0)
+            // }
+
+            println("start")
             def includeOrExcludeFaster(hState: HeuristicState, depth: Int): Double =
-                // TODO: instead of picking an arbitrary edge, pick the one which would worsen estScore the most
-                val nextEdge = hState.edgesInNodes.keys.headOption.orElse(hState.edgesInPermaIncluded.keys.headOption)
+                // (TODO) enhancements that might diverge from the slower version of this heuristic:
+                //     TODO: instead of picking an arbitrary edge, pick the one which would worsen estScore the most
+                //         TODO (speedup): reuse computation between different edges under consideration
+                //         TODO (simplicity): check if doing this lets us get rid of edgesInPermaIncluded
+                //     TODO: force-included nodes should be unable to use adjBonusForLast
+                // TODO (unsure if in the above category or mandatory to fix): it should be impossible to include/exclude everything, because at least one node should be able to use adjBonusForLast
+                val includedIndices = hState.included.map(_._1).toSet
+                val edgesInIncluded = hState.included.map(_._2).toSet
+                val totalIncludedLen = hState.reducedLengths.keys.map(i =>
+                    if (i == -1)
+                        0
+                    else
+                        intervals(i).from
+                ).sum
+                println(hState.next)
+                println(hState.included)
+                println(hState)
+                println("--------")
+                // TODO ponder: whether it's ok if `next` ever contains something with a better efficiency than included.head - because: 1) this sometimes happens, and 2) I think it's not ok
+                if (hState.next.headOption.exists(item => item._3 > hState.included.headOption.map(_._3).getOrElse(Double.MaxValue))) {
+                    println(hState.next)
+                    println(hState.included)
+                    println(hState)
+                    System.exit(0)
+                }
+                // TODO (minor performance): the above two statements can be made much faster, but check whether they matter anyway
+                val nextEdge = intervals.indices.find: i =>
+                    (edgesInIncluded.contains(i) || hState.edgesInPermaIncluded.get(i).exists(_.nonEmpty)) &&
+                    !includedIndices.contains(i) &&
+                    !hState.reducedLengths.contains(i) &&
+                    !hState.excluded.contains(i) &&
+                    intervals(i).from <= state.remaining - totalIncludedLen
                 nextEdge match
                     case Some(idx) =>
                         val includedState =
-                            var idxInArr = 0
-                            val arr = bestBonuses2(idx)
-                            while (hState.excluded.contains(arr(idxInArr)._1))
-                                idxInArr += 1
-                            var addedNodes = hState.addedNodes
-                            val permaIncluded = hState.permaIncluded :+ (intervals(idx).from.toDouble, idxInArr, arr)
-                            val edgesInNodes = hState.edgesInNodes.removed(idx)
-                            val edgesInPermaIncluded = hState.edgesInPermaIncluded.removed(idx)
-                            var included = hState.included
+                            val nextIndices = hState.nextIndices.clone()
+                            val (nextDst, nextEff) = updateAndGetNext(hState.excluded, nextIndices, idx)
+                            val edgesInPermaIncluded = hState.edgesInPermaIncluded
+                                .removed(idx)
+                                .updatedWith(nextDst)(_.map(_ + idx))
                             val reducedLengths = hState.reducedLengths.updated(idx, intervals(idx).choiceLen)
+                            var included = hState.included
+                            val next = hState.next.clone()
                             var remaining = hState.remaining - intervals(idx).from
-                            var estScore = hState.estScore + intervals(idx).from * arr(idxInArr)._2
+                            var estScore = hState.estScore + intervals(idx).from * nextEff
                             while (remaining < 0)
-                                val removed@(idxToRemove, edgeToRemove, eff) = included.head
-                                addedNodes = addedNodes.removed(idxToRemove)
+                                val (idxToRemove, edgeToRemove, eff) = included.head
                                 included = included.tail
                                 val len = reducedLengths.get(idxToRemove).getOrElse(intervals(idxToRemove).to)
                                 estScore -= eff * len
                                 remaining += len
-                            HeuristicState(addedNodes, permaIncluded, edgesInNodes, edgesInPermaIncluded,
-                                included, reducedLengths, hState.excluded, remaining, estScore)
+                                next.enqueue((idxToRemove, edgeToRemove, eff))
+
+                            val nextState = HeuristicState(nextIndices, next, edgesInPermaIncluded, included,
+                                reducedLengths, hState.excluded, remaining, estScore)
+                            fillCapacity(nextState)
+
                         val excludedState =
+                            val next = hState.next.clone()
+                            val nextIndices = hState.nextIndices.clone()
                             val excluded = hState.excluded.add(idx)
                             var estScore = hState.estScore
                             var edgesInPermaIncluded = hState.edgesInPermaIncluded
-                            hState.edgesInPermaIncluded.get(idx).foreach: indices =>
-                                indices.foreach: i =>
-                                    val (len, idxInArr, arr) = permaIncluded(i)
-                                    var newIdx = idxInArr + 1
-                                    while (excluded.contains(arr(newIdx)._1))
-                                        newIdx += 1
-                                    val (newNext, newEff) = arr(newIdx)
-                                    estScore -= len * (arr(idxInArr)._2 - newEff)
-                                    permaIncluded = permaIncluded.updated(i, (len, newIdx, arr))
-                                    edgesInPermaIncluded = edgesInPermaIncluded.updatedWith(newNext)(s => {
-                                        s match
-                                            case Some(set) => Some(set + i)
-                                            case None => Some(Set(i))
-                                    })
+                            edgesInPermaIncluded(idx).foreach: i =>
+                                val oldEff = bestEffPerNode(i)(nextIndices(i))._2
+                                val (newEdge, newEff) = updateAndGetNext(excluded, nextIndices, i)
+                                estScore -= intervals(i).from * (oldEff - newEff)
+                                edgesInPermaIncluded = edgesInPermaIncluded.updatedWith(newEdge)(_.map(_ + i))
                             edgesInPermaIncluded = edgesInPermaIncluded.removed(idx)
-                            var addedNodes = hState.addedNodes
-                            var included = hState.included
                             var remaining = hState.remaining
-                            var edgesInNodes = hState.edgesInNodes
-                            hState.edgesInNodes.get(idx).foreach: indices =>
-                                indices.foreach: i =>
-                                    var queue = addedNodes(i)
-                                    var stop = false
-                                    while (!stop)
-                                        queue.dequeueOption match
-                                            case Some(((edge, newEff), nextQueue)) =>
-                                                queue = nextQueue
-                                                if !excluded.contains(edge) then
-                                                    val len = hState.reducedLengths.get(i).getOrElse(intervals(i).to)
-                                                    // estScore -= len * (??? - newEff)
-                                                    intervals(i)
-                                                    stop = true
-                                                    // TODO: handle this case
-                                            case None =>
-                                                stop = true
-                                                // TODO: handle this case
-                                    addedNodes = addedNodes.updated(i, queue)
-                                    // TODO: also update edgesInNodes to add the new edge
-                            edgesInNodes = edgesInNodes.removed(idx)
-                            HeuristicState(addedNodes, permaIncluded, edgesInNodes, edgesInPermaIncluded,
+                            val (toRemove, newIncluded) = hState.included.partition(_._2 == idx)
+                            toRemove.foreach: (i, _, eff) =>
+                                val len = hState.reducedLengths.get(i).getOrElse(intervals(i).to)
+                                remaining += len
+                                estScore -= len * eff
+                                val (newEdge, newEff) = updateAndGetNext(excluded, nextIndices, i)
+                                next.enqueue((i, newEdge, newEff))
+                            val included = newIncluded
+                            val updState = HeuristicState(nextIndices, next, edgesInPermaIncluded,
                                 included, hState.reducedLengths, excluded, remaining, estScore)
+                            fillCapacity(updState)
+
                         if depth == 0 then
                             includedState.finalEstScore max excludedState.finalEstScore
                         else
                             val includedScore = includeOrExcludeFaster(includedState, depth - 1)
                             val excludedScore = includeOrExcludeFaster(excludedState, depth - 1)
                             includedScore max excludedScore
-                    case None =>
-                        hState.finalEstScore
+                    case None => hState.finalEstScore
             includeOrExcludeFaster(startHState, HEURISTIC_DEPTH)
-        */
 
         // TODO: try having a constraint on each `j` (edge-destination) appearing only once, rather than potentially giving adj bonus to multiple; or compromise variant: spanning tree/arborescence, if that's at all possible
         // TODO: try having only one adjBonusForLast
-        inline def whichHeuristic(state: State) = if useZeroHeuristic then 10000000.0 else heuristic1(state)
+        inline def whichHeuristic(state: State) = if useZeroHeuristic then 10000000.0 else heuristic2(state)
         // inline def whichHeuristic = heuristic1
         inline def heuristic(state: State) = state.heuristic.getOrElse({
             heurCalls += 1
@@ -657,7 +485,7 @@ object BranchAndBound:
         })
 
         inline def displayHeuristics(s: State) =
-            val heuristics = Seq(heuristic1, heuristic2)
+            val heuristics = Seq(heuristic1, heuristic2, heuristic2Faster)
             println(heuristics.map(_(s)).mkString(" | "))
 
         val startState = State(BitSet(), -1, target, 0.0, BitSet(), List[Int](), 0.0, 0)
@@ -668,9 +496,9 @@ object BranchAndBound:
         var bestScore = Double.MinValue
         var bestSolution: Option[State] = None
         while (fringe.nonEmpty && heuristic(fringe.head) > bestScore)
-            // if heurCalls % 200000 == 0 then
-            //     displayHeuristics(fringe.head)
-            //     println((fringe.size, fringe.head.score, bestScore))
+            if heurCalls % 1000 == 0 then
+                displayHeuristics(fringe.head)
+                println((fringe.size, fringe.head.score, bestScore))
             val state@State(visited, lastEffLen, remaining, score, maxed, visitedSeq, bestBonus, bestBonusLen) = fringe.dequeue()
             if remaining < bestBonusLen then
                 val finalScore = score + bestBonus * remaining
@@ -737,7 +565,7 @@ object BranchAndBound:
             yield nextState
             fringe ++= nextStates
         val state@State(visited, lastEffLen, remaining, score, maxed, visitedSeq, bestBonus, bestBonusLen) = bestSolution.get
-        // println(s"heurCalls = $heurCalls | score = ${bestScore / FPS} | len = ${visitedSeq.length}")
+        println(s"heurCalls = $heurCalls | score = ${bestScore / FPS} | len = ${visitedSeq.length}")
         // println(s"$target | ${state.visitedSeq}")
         /*
         println("double check: " + ({

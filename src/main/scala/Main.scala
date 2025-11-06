@@ -326,44 +326,33 @@ def solveLocalSearch(intervals: Array[Interval], adjBonuses: Array[Array[Double]
         yield permutation.flatten
         allPossibilities.nextOption
 
-    // val funcs = Seq(
-    //     tryRemoving -> "tryRemoving",
-    //     kOpt(2) -> s"kOpt(${2})",
-    //     kReplace(1) -> s"kReplace(1)",
-    //     tryAdding -> "tryAdding",
-    //     tryReversing -> "tryReversing",
-    //     kOpt(kToUse) -> s"kOpt(${kToUse})",
-    //     kSwap(kToUse) -> s"kSwap(${kToUse})",
-    //     kReplace(kToUse - 2) -> s"kReplace(${kToUse - 2})",
-    // ).view
     val funcs = Seq(
-        kOpt(3) -> "kOpt(3)",
-        kReplace(1) -> "kReplace(1)",
-        tryAdding -> "tryAdding"
+        tryRemoving -> "tryRemoving",
+        kOpt(2) -> s"kOpt(${2})",
+        kReplace(1) -> s"kReplace(1)",
+        tryAdding -> "tryAdding",
+        tryReversing -> "tryReversing",
+        kOpt(kToUse) -> s"kOpt(${kToUse})",
+        kSwap(kToUse) -> s"kSwap(${kToUse})",
+        kReplace(kToUse - 2) -> s"kReplace(${kToUse - 2})",
     ).view
+    // val funcsInJsCode = Seq(
+    //     kOpt(3) -> "kOpt(3)",
+    //     kReplace(1) -> "kReplace(1)",
+    //     tryAdding -> "tryAdding"
+    // ).view
     var halt = false
     while (!halt)
         funcs.flatMap((f, name) => {
             f(curSolution).map(sol => (sol, name))
         }).headOption match
             case Some((newSolution, fName)) =>
-                // val prevLen = getBestLengths(curSolution).sum
-                // val newLen = getBestLengths(newSolution).sum
-                // if (prevLen != newLen) {
-                //     println((prevLen, newLen, fName))
-                //     System.exit(0)
-                // }
                 curSolution = newSolution
                 // println(newSolution)
                 // println(s"${simpleScore(curSolution) / FPS} <- $fName")
             case None =>
                 halt = true
 
-    // println(curSolution.map(i => intervals(i).from).sum)
-    // println(getBestLengths(curSolution).sum)
-    // println(getBestLengths2(curSolution).sum)
-    // println(target)
-    // println(curSolution)
     println(s"Solution stats: $curSolution | ${getBestLengths(curSolution)} | ${getBestLengths2(curSolution)} | ${curSolution.map(intervals.apply)} | $target | $adjBonusForLast")
     val finalScore = simpleScore(curSolution) / FPS
     (curSolution, finalScore)
@@ -424,12 +413,12 @@ def solveWith(n: Int, targetFraction: Double, maxWidth: Double) =
 
     var theBnbRes = Double.MaxValue
     val t1 = System.nanoTime()
-    try
+    // try
         val (bnbSolution, bnbRes) = BranchAndBound.solveBranchAndBound(intervals, adjBonuses, target, MAX_INTERVAL_BONUS, LAST_ADJ_MULT)
         theBnbRes = bnbRes
         println(s"$bnbRes (len = ${bnbSolution.length}) - branch and bound - solved for ${(System.nanoTime() - t1) / 1_000_000}ms")
-    catch
-        case _ => println("B&B - Exception occurred")
+    // catch
+    //     case _ => println("B&B - Exception occurred")
     for
         slowerFuncs <- Seq(false, true)
         if !canSolveBruteForce(intervals, target) // TODO (style, PLEASE): wrong place for an if statement
@@ -448,6 +437,13 @@ def solveWith(n: Int, targetFraction: Double, maxWidth: Double) =
             System.exit(0)
 
 @main def run(): Unit =
+    solveWith(
+        n = 16,
+        targetFraction = 0.5,
+        maxWidth = 0.5
+    )
+    System.exit(0)
+
     for
         maxWidth <- Seq(1.0, 0.8, 0.6, 0.3, 0.1)
         // n <- Seq(1, 2, 3, 4, 5, 6, 7, 8, 9, 10, 11, 12)
