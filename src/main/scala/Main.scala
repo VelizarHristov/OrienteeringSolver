@@ -414,7 +414,7 @@ def solveWith(n: Int, targetFraction: Double, maxWidth: Double) =
     var theBnbRes = Double.MaxValue
     val t1 = System.nanoTime()
     // try
-        val (bnbSolution, bnbRes) = BranchAndBound.solveBranchAndBound(intervals, adjBonuses, target, MAX_INTERVAL_BONUS, LAST_ADJ_MULT)
+        val (bnbSolution, bnbRes) = BranchAndBound.solve(intervals, adjBonuses, target, MAX_INTERVAL_BONUS, LAST_ADJ_MULT)
         theBnbRes = bnbRes
         println(s"$bnbRes (len = ${bnbSolution.length}) - branch and bound - solved for ${(System.nanoTime() - t1) / 1_000_000}ms")
     // catch
