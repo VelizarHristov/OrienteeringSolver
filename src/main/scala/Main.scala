@@ -18,7 +18,6 @@ case class Interval(from: Int, to: Int, relevance: Double):
     // effective length, only for calculating score
     val toWithBonus = to * (1 + MAX_INTERVAL_BONUS)
 
-// TODO: could speed up by storing curLen and score in allStates (but I don't think it will help that much)
 def solveBruteForce(intervals: Array[Interval], adjBonuses: Array[Array[Double]], target: Int) =
     val adjBonusForLast =
         if intervals.length == 1 then
@@ -83,25 +82,6 @@ def solveBruteForce(intervals: Array[Interval], adjBonuses: Array[Array[Double]]
     if paddedNode == -1 then
         None
     else
-        // val visited = bestState._2
-        // val score = lengths.indices.map(i => {
-        //     val id = visited(i)
-        //     val effLen = if lengths(i) == intervals(id).to then intervals(id).toWithBonus else lengths(i).toDouble
-        //     val adjBonus = if i == 0 then adjBonusForLast else adjBonuses(id)(visited(i - 1))
-        //     effLen * (adjBonus + intervals(id).relevance)
-        // }).sum
-        // println(lengths.indices.map(i => {
-        //     val id = visited(i)
-        //     val effLen = if lengths(i) == intervals(id).to then intervals(id).toWithBonus else lengths(i).toDouble
-        //     val adjBonus = if i == 0 then adjBonusForLast else adjBonuses(id)(visited(i - 1))
-        //     println((effLen, adjBonus, intervals(id).relevance))
-        //     effLen * (adjBonus + intervals(id).relevance)
-        // }))
-        // println("score should be = " + score)
-        // println("lengths.reverse = " + lengths.reverse)
-        // println("visited.reverse = " + visited.reverse)
-        // println("adjBonusForLast = " + adjBonusForLast)
-        // paddedNode could also be outputted
         Some((bestState, bestScore, lengths))
 
 def findFeasible(intervals: List[Interval], target: Int, slack: Int = 0): Option[List[Int]] =
@@ -176,13 +156,13 @@ def solveLocalSearch(intervals: Array[Interval], adjBonuses: Array[Array[Double]
             val res = if solution.map(i => intervals(i).from).sum > target then
                 0
             else
-                val lengths = if useSlowerLengthsFunc then getBestLengths2(solution) else getBestLengths(solution)
+                val lengths = if useSlowerLengthsFunc then getBestLengthsSlower(solution) else getBestLengths(solution)
                 solutionScore(solution, lengths)
             simpleScoreMemo(solution) = res
             res
 
-    // TODO: rename (note - this is a slower version that sometimes finds a better score)
-    def getBestLengths2(solution: Seq[Int]) =
+    // sometimes produces a higher score than getBestLengths
+    def getBestLengthsSlower(solution: Seq[Int]) =
         val bestEffs = efficiencies(solution).zipWithIndex.sortBy(-_._1)
         var spareLength = target - solution.map(i => intervals(i).from).sum
         var i = 0
@@ -343,17 +323,13 @@ def solveLocalSearch(intervals: Array[Interval], adjBonuses: Array[Array[Double]
     // ).view
     var halt = false
     while (!halt)
-        funcs.flatMap((f, name) => {
-            f(curSolution).map(sol => (sol, name))
-        }).headOption match
-            case Some((newSolution, fName)) =>
-                curSolution = newSolution
-                // println(newSolution)
-                // println(s"${simpleScore(curSolution) / FPS} <- $fName")
-            case None =>
-                halt = true
+        funcs.flatMap((f, _) =>
+            f(curSolution)//.map(sol => (sol, name))
+        ).headOption match
+            case Some(newSolution) => curSolution = newSolution
+            case None => halt = true
 
-    println(s"Solution stats: $curSolution | ${getBestLengths(curSolution)} | ${getBestLengths2(curSolution)} | ${curSolution.map(intervals.apply)} | $target | $adjBonusForLast")
+    println(s"Solution stats: $curSolution | ${getBestLengths(curSolution)} | ${getBestLengthsSlower(curSolution)} | ${curSolution.map(intervals.apply)} | $target | $adjBonusForLast")
     val finalScore = simpleScore(curSolution) / FPS
     (curSolution, finalScore)
 
@@ -373,14 +349,13 @@ def solveHeuristic(intervals: Array[Interval], adjBonuses: Array[Array[Double]],
     else
         solveLocalSearch(intervals, adjBonuses, target)
 
-// TODO: (style) simplify by specifying "from" and "to" or "width", and multiplying random.nextDouble by each width
 val random = Random(1000000)
 def generateIntervals(n: Int, maxWidth: Double) =
-    val maxFrom = 5
     val minFrom = 2
+    val fromWidth = 3
 
     (1 to n).map(_ => {
-        val from = minFrom + random.nextInt(maxFrom - minFrom) + random.nextDouble
+        val from = minFrom + fromWidth * random.nextDouble
         val width = maxWidth * random.nextDouble
         val to = from + from * width
         val relevance = random.nextDouble
@@ -389,7 +364,6 @@ def generateIntervals(n: Int, maxWidth: Double) =
 
 val minTarget = 5
 def solveWith(n: Int, targetFraction: Double, maxWidth: Double) =
-    // val target = ((minTarget + random.nextInt(maxTarget - minTarget) + random.nextDouble()) * FPS).round.toInt
     val intervals = generateIntervals(n, maxWidth)
     val target = (intervals.map(_.to).sum * targetFraction).round.toInt
     val adjBonuses = (1 to n).map(i =>
@@ -413,41 +387,35 @@ def solveWith(n: Int, targetFraction: Double, maxWidth: Double) =
 
     var theBnbRes = Double.MaxValue
     val t1 = System.nanoTime()
-    // try
-        val (bnbSolution, bnbRes) = BranchAndBound.solve(intervals, adjBonuses, target, MAX_INTERVAL_BONUS, LAST_ADJ_MULT)
-        theBnbRes = bnbRes
-        println(s"$bnbRes (len = ${bnbSolution.length}) - branch and bound - solved for ${(System.nanoTime() - t1) / 1_000_000}ms")
-    // catch
-    //     case _ => println("B&B - Exception occurred")
+    val (bnbSolution, bnbRes) = BranchAndBound.solve(intervals, adjBonuses, target, MAX_INTERVAL_BONUS, LAST_ADJ_MULT)
+    theBnbRes = bnbRes
+    println(s"$bnbRes (len = ${bnbSolution.length}) - branch and bound - solved for ${(System.nanoTime() - t1) / 1_000_000}ms")
     for
-        slowerFuncs <- Seq(false, true)
-        if !canSolveBruteForce(intervals, target) // TODO (style, PLEASE): wrong place for an if statement
-        k <- Seq(3, 4, 5)
-        if n > k
+        useSlowerLengthsFunc <- Seq(false, true)
+        kToUse <- Seq(3, 4, 5)
+        if n > kToUse
     do
-        kToUse = k
-        useSlowerLengthsFunc = slowerFuncs
         val t = System.nanoTime()
         val (solution, res) = solveLocalSearch(intervals, adjBonuses, target)
         println(s"$res (len = ${solution.length}) - local search (k = $kToUse | slowerFuncs = $useSlowerLengthsFunc) - solved for ${(System.nanoTime() - t) / 1_000_000.0}ms")
         if res - theBnbRes > 0.001 && solution.length > 1 then
             println("Trying again")
-            val r = BranchAndBound.solveBranchAndBound(intervals, adjBonuses, target, MAX_INTERVAL_BONUS, LAST_ADJ_MULT, true)
+            val r = BranchAndBound.solve(intervals, adjBonuses, target, MAX_INTERVAL_BONUS, LAST_ADJ_MULT)
             println(r)
             System.exit(0)
 
 @main def run(): Unit =
     solveWith(
-        n = 16,
+        n = 21,
         targetFraction = 0.5,
         maxWidth = 0.5
     )
-    System.exit(0)
 
+    // Test with different data and print data as JS, ready for debugging main.js
+    /*
     for
         maxWidth <- Seq(1.0, 0.8, 0.6, 0.3, 0.1)
-        // n <- Seq(1, 2, 3, 4, 5, 6, 7, 8, 9, 10, 11, 12)
-        n <- Seq(18)
+        n <- Seq(1, 2, 3, 4, 5, 6, 7, 8, 9, 10, 11, 12)
         targetFraction <- Seq(0.1, 0.2, 0.4, 0.6, 0.8, 0.9)
     do
         val intervals = generateIntervals(n, maxWidth)
@@ -466,23 +434,19 @@ def solveWith(n: Int, targetFraction: Double, maxWidth: Double) =
         val intervalsAsJS = "[" + intervals.map(i => s"{from: ${i.from}, to: ${i.to}, score: ${i.relevance}, choiceLen: ${i.choiceLen}}").mkString(",") + "]"
         val adjBonusesAsJS = "[" + adjBonuses.map(arr => "[" + arr.mkString(",") + "]").mkString(",") + "]"
         println(s"debugSolve($intervalsAsJS, $adjBonusesAsJS, $target, $score, \"${solution.mkString(",")}\", $msTaken)")
-    System.exit(0)
+    */
 
+    // Test a wide variety of data, would take many many hours to actually run
+    /*
     for
         maxIntervalBonus <- Seq(0.03, 0.01, 0.08)
-        lastAdjMult <- Seq(1.2)
+        lastAdjMult <- Seq(1.2, 1.1, 1.3)
         maxAdjBonus <- Seq(0.5, 0.2, 1.1)
         maxWidth <- Seq(1.0, 0.6, 0.3, 0.1)
-        n <- Seq(1, 2, 3, 4, 5, 5, 6, 7, 8, 9, 10, 11, 12, 10, 10)//, 15, 20, 25)
+        n <- Seq(5, 10, 15, 15, 20, 25)
         targetFraction <- Seq(0.1, 0.2, 0.4, 0.6, 0.8)
         if targetFraction * n <= 12
 
-        // maxIntervalBonus <- Seq(0.03, 0.01, 0.08)
-        // lastAdjMult <- Seq(1.2, 1.1, 1.3)
-        // maxAdjBonus <- Seq(0.65, 0.2, 1.2)
-        // maxWidth <- Seq(1.0, 0.6, 0.3, 0.1, 0.05)
-        // n <- Seq(5, 10, 15, 15, 20, 25, 30, 35)
-        // targetFraction <- Seq(0.1, 0.2, 0.4, 0.4, 0.6, 0.8, 0.9)
     do
         println(s"solving with: maxIntervalBonus = $maxIntervalBonus | lastAdjMult = $lastAdjMult | maxAdjBonus = $maxAdjBonus | maxWidth = $maxWidth | n = $n | targetFraction = $targetFraction")
         MAX_INTERVAL_BONUS = maxIntervalBonus
@@ -493,3 +457,4 @@ def solveWith(n: Int, targetFraction: Double, maxWidth: Double) =
             targetFraction = targetFraction,
             maxWidth = maxWidth
         )
+    */

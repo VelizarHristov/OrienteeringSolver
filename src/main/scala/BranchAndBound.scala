@@ -2,7 +2,6 @@ package main
 
 import collection.mutable
 
-// TODO: should not crash with small problem sizes (should give the same output as brute force)
 object BranchAndBound:
     opaque type BitSet = Long
 
@@ -22,15 +21,14 @@ object BranchAndBound:
         maxed: BitSet,
         visitedSeq: List[Int],
         bestBonus: Double,
-        bestBonusLen: Int
+        bestBonusLen: Int,
+        mostRemovable: Option[(flatLoss: Double, efficiency: Double, len: Int)] = None,
+        mostAddable: Option[(efficiency: Double, maxLen: Int, addableLen: Int)] = None
     ):
         inline def lastOpt = visitedSeq.headOption
         var heuristic: Option[Double] = None
 
-        var mostRemovable: Option[(flatLoss: Double, efficiency: Double, len: Int)] = None
-        var mostAddable: Option[(efficiency: Double, maxLen: Int, addableLen: Int)] = None
-
-        // TODO: tighten this by turning mostRemovable and mostAddable into sorted lists and comparing them more thoroughly
+        // TODO: tighten this by turning mostRemovable and mostAddable into sorted lists (heaps) and comparing them more thoroughly
 
         def isInconsistent =
             val failures = for
@@ -164,9 +162,10 @@ class BranchAndBound(
         var bestScore = Double.MinValue
         var bestSolution: Option[State] = None
         while (fringe.nonEmpty && heuristic(fringe.head) > bestScore)
-            if heurCalls % 2000 == 0 then
+            if heurCalls % 5000 == 0 then
                 println((fringe.size, fringe.head.score, bestScore))
-            val state@State(visited, lastEffLen, remaining, score, maxed, visitedSeq, bestBonus, bestBonusLen) = fringe.dequeue()
+            val state@State(visited, lastEffLen, remaining, score, maxed, visitedSeq, bestBonus,
+                bestBonusLen, mostRemovable, mostAddable) = fringe.dequeue()
             if remaining < bestBonusLen then
                 val finalScore = score + bestBonus * remaining
                 if finalScore > bestScore then
@@ -184,7 +183,7 @@ class BranchAndBound(
                 effectiveLength = if takeMax then next.toWithBonus else from.toDouble
                 adjBonus = state.lastOpt.map(last => adjBonuses(last)(nextIdx)).getOrElse(0.0)
                 nextScore = score + effectiveLength * (relevance + adjBonusForLast) + lastEffLen * (adjBonus - adjBonusForLast)
-                mapKey = (visited, nextIdx, effectiveLength, nextRemaining) // TODO: (style) when we make State a case class, this should be from a method instead
+                mapKey = (visited, nextIdx, effectiveLength, nextRemaining)
                 if bestVisited(mapKey) < nextScore
                 _ = bestVisited.update(mapKey, nextScore)
                 nextVisited = visited.add(nextIdx)
@@ -204,34 +203,35 @@ class BranchAndBound(
                                 best = lastBonus
                                 len = intervals(last).choiceLen
                     (best, len)
-                nextState = State(nextVisited, effectiveLength, nextRemaining, nextScore, nextMaxed, nextVisitedSeq, newBestBonus, newBestBonusLen)
-                _ =
-                    // TODO (style): should these be a part of the case class if we're copying them around like this
-                    nextState.mostRemovable = state.mostRemovable
-                    nextState.mostAddable = state.mostAddable
+                (mostRm, mostAdd) =
+                    var mostRm = mostRemovable
+                    var mostAdd = mostAddable
                     state.lastOpt.foreach: last =>
-                        val (worstFlatLoss, worstEfficiency, worstLen) = nextState.mostRemovable.getOrElse((Double.MinValue, Double.MaxValue, 0))
+                        val (worstFlatLoss, worstEfficiency, worstLen) = mostRm.getOrElse((Double.MinValue, Double.MaxValue, 0))
                         inline def approxBadness(flat: Double, eff: Double, len: Int) = flat - eff * len / 2
                         val badness = approxBadness(worstFlatLoss, worstEfficiency, worstLen)
                         val efficiency = intervals(last).relevance + adjBonuses(last)(nextIdx)
                         if lastEffLen == intervals(last).from then
-                            val (bestEfficiency, _, _) = nextState.mostAddable.getOrElse((0.0, 0, 0))
+                            val (bestEfficiency, _, _) = mostAdd.getOrElse((0.0, 0, 0))
                             if efficiency > bestEfficiency then
-                                nextState.mostAddable = Some((efficiency, intervals(last).from, intervals(last).choiceLen))
+                                mostAdd = Some((efficiency, intervals(last).from, intervals(last).choiceLen))
                             visitedSeq.headOption.foreach: beforeLast =>
                                 val beforeLastLen = if maxed.contains(beforeLast) then intervals(beforeLast).toWithBonus else intervals(beforeLast).from.toDouble
                                 // this "loss" might be a negative number, making it a gain
                                 val flatLoss = beforeLastLen * (adjBonuses(beforeLast)(last) - adjBonuses(beforeLast)(nextIdx))
                                 if approxBadness(flatLoss, efficiency, intervals(last).from) > badness then
-                                    nextState.mostRemovable = Some((flatLoss, efficiency, intervals(last).from))
+                                    mostRm = Some((flatLoss, efficiency, intervals(last).from))
                         else
                             val flatLoss = MAX_INTERVAL_BONUS * intervals(last).to * efficiency
                             if approxBadness(flatLoss, efficiency, intervals(last).choiceLen) > badness then
-                                nextState.mostRemovable = Some((flatLoss, efficiency, intervals(last).choiceLen))
+                                mostRm = Some((flatLoss, efficiency, intervals(last).choiceLen))
+                    (mostRm, mostAdd)
+                nextState = State(nextVisited, effectiveLength, nextRemaining, nextScore, nextMaxed,
+                    nextVisitedSeq, newBestBonus, newBestBonusLen, mostRm, mostAdd)
                 if heuristic(nextState) > bestScore
             yield nextState
             fringe ++= nextStates
-        val state@State(visited, lastEffLen, remaining, score, maxed, visitedSeq, bestBonus, bestBonusLen) = bestSolution.get
+        val state@State(visited, lastEffLen, remaining, score, maxed, visitedSeq, bestBonus, bestBonusLen, _, _) = bestSolution.get
         println(s"heurCalls = $heurCalls | score = ${bestScore / FPS} | len = ${visitedSeq.length}")
         println("lengths: " + {
             visitedSeq.indices.map(i => {
