@@ -7,11 +7,12 @@ var MAX_INTERVAL_BONUS = 0.03
 // a rough approximate of the average adj bonus of the optimal trip, divided by the average of all adj bonuses
 var LAST_ADJ_MULT = 1.2
 val FPS = 120
-// how important adj bonus is relative to relevance - max relevance is 1.0
-var MAX_ADJ_BONUS = 0.5
 
 var kToUse = 4
 var useSlowerLengthsFunc = false
+
+// (FOR DATA GENERATION) how important adj bonus is relative to relevance - max relevance is 1.0
+var MAX_ADJ_BONUS = 0.5
 
 case class Interval(from: Int, to: Int, relevance: Double):
     val choiceLen = to - from

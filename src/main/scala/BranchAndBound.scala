@@ -162,7 +162,7 @@ class BranchAndBound(
         var bestScore = Double.MinValue
         var bestSolution: Option[State] = None
         while (fringe.nonEmpty && heuristic(fringe.head) > bestScore)
-            if heurCalls % 5000 == 0 then
+            if heurCalls % 25000 == 0 then
                 println((fringe.size, fringe.head.score, bestScore))
             val state@State(visited, lastEffLen, remaining, score, maxed, visitedSeq, bestBonus,
                 bestBonusLen, mostRemovable, mostAddable) = fringe.dequeue()
